@@ -19,22 +19,27 @@ class Geolocalizer(L.LightningModule):
         self.loss = instantiate(cfg.loss)
         self.val_metrics = instantiate(cfg.val_metrics)
         self.test_metrics = instantiate(cfg.test_metrics)
+        self.train_metrics = instantiate(cfg.train_metrics)
         self.text_tuning = cfg.text_tuning
 
     def training_step(self, batch, batch_idx):
         pred = self.model(batch)
         if self.text_tuning:
             pred["text_features"] = self.text_model(batch)
-        loss = self.loss(pred, batch, average=True)
-        for metric_name, metric_value in loss.items():
-            self.log(
-                f"train/{metric_name}",
-                metric_value,
-                sync_dist=True,
-                on_step=True,
-                on_epoch=True,
-            )
+        loss = self.loss(pred, batch, average=True)["loss"]
+        self.train_metrics.update(pred, batch)
+        self.log("train/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
         return loss
+
+    def on_train_epoch_end(self):
+        # Compute and log training metrics at the end of each epoch
+        metrics = self.train_metrics.compute()
+
+        # Print the training loss and metrics to the console
+        print(f"\nEpoch {self.current_epoch} - Training Metrics:")
+        print(f"  train/loss: {self.trainer.callback_metrics['train/loss'].item():.4f}")
+        for metric_name, metric_value in metrics.items():
+            print(f"  train/{metric_name}: {metric_value:.4f}")
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
@@ -46,15 +51,14 @@ class Geolocalizer(L.LightningModule):
         self.log("val/loss", loss, sync_dist=True, on_step=False, on_epoch=True)
 
     def on_validation_epoch_end(self):
+        # Compute and log validation metrics at the end of each epoch
         metrics = self.val_metrics.compute()
+
+        # Print the validation loss and metrics to the console
+        print(f"\nEpoch {self.current_epoch} - Validation Metrics:")
+        print(f"  val/loss: {self.trainer.callback_metrics['val/loss'].item():.4f}")
         for metric_name, metric_value in metrics.items():
-            self.log(
-                f"val/{metric_name}",
-                metric_value,
-                sync_dist=True,
-                on_step=False,
-                on_epoch=True,
-            )
+            print(f"  val/{metric_name}: {metric_value:.4f}")
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
@@ -62,15 +66,13 @@ class Geolocalizer(L.LightningModule):
         self.test_metrics.update(pred, batch)
 
     def on_test_epoch_end(self):
+        # Compute and log test metrics at the end of the test epoch
         metrics = self.test_metrics.compute()
+
+        # Print the test metrics to the console
+        print(f"\nTest Metrics:")
         for metric_name, metric_value in metrics.items():
-            self.log(
-                f"test/{metric_name}",
-                metric_value,
-                sync_dist=True,
-                on_step=False,
-                on_epoch=True,
-            )
+            print(f"  test/{metric_name}: {metric_value:.4f}")
 
     def configure_optimizers(self):
         lora_params = []
