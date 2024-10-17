@@ -11,7 +11,7 @@ defaults:
 
 class_name: 'quadtree_10_1000'
 is_baseline: false
-max_epochs: 30
+max_epochs: 2
 
 model:
   name: best_model
