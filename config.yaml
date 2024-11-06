@@ -1,0 +1,229 @@
+model:
+  optimizer:
+    optim:
+      _target_: torch.optim.Adam
+      lr: 0.0002
+      betas:
+      - 0.9
+      - 0.999
+      weight_decay: 0.0001
+    exclude_ln_and_biases_from_weight_decay: false
+    lora_lr: 0.0001
+    backbone_lr: 2.0e-05
+    last_block_lr: 5.0e-05
+    unfreeze_lr: false
+    diff_backbone_last: false
+  lr_scheduler:
+    _partial_: true
+    _target_: utils.lr_scheduler.WarmupLR
+    warmup_steps: 0
+  network:
+    backbone:
+      instance:
+        _target_: models.networks.backbones.CLIP
+        path: laion/CLIP-ViT-L-14-DataComp.XL-s13B-b90K
+      output_dim: 1024
+    mid:
+      activation:
+        _target_: torch.nn.GELU
+        _partial_: true
+      norm:
+        _target_: torch.nn.GroupNorm
+        _partial_: true
+      instance:
+        _target_: models.networks.mlp.MLPCentroid
+        initial_dim: ${model.network.backbone.output_dim}
+        hidden_dim:
+        - ${model.network.backbone.output_dim}
+        - 512
+        final_dim: ${model.network.head.final_dim}
+        norm: ${model.network.mid.norm}
+        activation: ${model.network.mid.activation}
+    head:
+      target_key: label
+      final_dim: ${eval:'${num_classes}*3'}
+      instance:
+        _target_: models.networks.heads.hybrid.HybridHeadCentroid
+        final_dim: ${num_classes}
+        use_tanh: true
+        scale_tanh: 1.2
+        quadtree_path: ${data_dir}/${class_name}.csv
+    instance:
+      _target_: models.networks.network.ContrastiveHybridUnFrozenBackbone
+      backbone: ${model.network.backbone}
+      mid: ${model.network.mid}
+      head: ${model.network.head}
+      mode: ${mode}
+    class_name: ${class_name}
+    root_dir: ${root_dir}
+  loss:
+    _target_: models.losses.Losses
+    mix:
+      region_mil: 1.0
+      hier_quad: 1.0
+      l2_hybrid: 1.0
+    path: ${data_dir}
+    num_devices: ${computer.devices}
+  name: best_model
+  text_tuning: ${text_tuning}
+  val_metrics:
+    _target_: metrics.distance_based.HaversineMetrics
+    acc_radiuses:
+    - 1
+    - 25
+    - 200
+    - 750
+    - 2500
+    acc_area: []
+    aux_data: ${aux_data}
+  test_metrics:
+    _target_: metrics.distance_based.HaversineMetrics
+    acc_radiuses:
+    - 1
+    - 25
+    - 200
+    - 750
+    - 2500
+    acc_area: ${areas}
+    aux_data: ${aux_data}
+  train_metrics:
+    _target_: metrics.distance_based.HaversineMetrics
+    acc_radiuses:
+    - 1
+    - 25
+    - 200
+    - 750
+    - 2500
+    acc_area: ${areas}
+    aux_data: ${aux_data}
+computer:
+  devices: 1
+  progress_bar_refresh_rate: 2
+  num_workers: 16
+  sync_batchnorm: false
+  accelerator: gpu
+  precision: 32
+  strategy: auto
+  num_nodes: 1
+dataset:
+  train_transform:
+    _target_: torchvision.transforms.Compose
+    transforms:
+    - _target_: torchvision.transforms.Resize
+      size: 224
+      interpolation: 3
+      antialias: true
+    - _target_: torchvision.transforms.CenterCrop
+      size: 224
+    - _target_: torchvision.transforms.ToTensor
+    - _target_: torchvision.transforms.Normalize
+      mean:
+      - 0.48145466
+      - 0.4578275
+      - 0.40821073
+      std:
+      - 0.26862954
+      - 0.26130258
+      - 0.27577711
+  test_transform:
+    _target_: torchvision.transforms.Compose
+    transforms:
+    - _target_: torchvision.transforms.Resize
+      size: 224
+      interpolation: 3
+      antialias: true
+    - _target_: torchvision.transforms.CenterCrop
+      size: 224
+    - _target_: torchvision.transforms.ToTensor
+    - _target_: torchvision.transforms.Normalize
+      mean:
+      - 0.48145466
+      - 0.4578275
+      - 0.40821073
+      std:
+      - 0.26862954
+      - 0.26130258
+      - 0.27577711
+  name: osv5m
+  global_batch_size: 30
+  train_dataset:
+    _partial_: true
+    _target_: data.data.Contrastiveosv5m
+    path: ${data_dir}/osv5m/
+    split: train
+    class_name: ${class_name}
+    transforms: ${dataset.train_transform}
+    class_name2: unique_region
+    blur: ${blur}
+  val_dataset:
+    _partial_: true
+    _target_: data.data.Contrastiveosv5m
+    path: ${data_dir}/osv5m/
+    split: val
+    class_name: ${class_name}
+    transforms: ${dataset.test_transform}
+    class_name2: unique_region
+    blur: ${blur}
+  test_dataset:
+    _partial_: true
+    _target_: data.data.Contrastiveosv5m
+    path: ${data_dir}/osv5m/
+    split: test
+    class_name: ${class_name}
+    transforms: ${dataset.test_transform}
+    class_name2: unique_region
+    blur: ${blur}
+datamodule:
+  _target_: data.datamodule.ImageDataModule
+  train_dataset: ${dataset.train_dataset}
+  val_dataset: ${dataset.val_dataset}
+  test_dataset: ${dataset.test_dataset}
+  global_batch_size: ${dataset.global_batch_size}
+  num_workers: ${computer.num_workers}
+  num_nodes: ${computer.num_nodes}
+  num_devices: ${computer.devices}
+  val_proportion: 0.01
+trainer:
+  _target_: pytorch_lightning.Trainer
+  devices: ${computer.devices}
+  accelerator: ${computer.accelerator}
+  strategy: ${computer.strategy}
+  num_nodes: ${computer.num_nodes}
+  precision: ${computer.precision}
+  max_epochs: ${max_epochs}
+logger:
+  _target_: pytorch_lightning.loggers.WandbLogger
+  save_dir: ${root_dir}
+  name: ${experiment_name}
+  project: plonk
+  log_model: false
+  offline: false
+  entity: sihle-university-of-kwazulu-natal
+checkpoints:
+  _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  dirpath: ${root_dir}/checkpoints/${experiment_name}
+  filename: epoch_{epoch}
+  monitor: val/loss
+  save_last: true
+  save_top_k: 1
+  every_n_epochs: 1
+progress_bar:
+  _target_: pytorch_lightning.callbacks.TQDMProgressBar
+  refresh_rate: ${computer.progress_bar_refresh_rate}
+aux_data: []
+max_epochs: 22
+data_dir: ${root_dir}/datasets
+root_dir: ${hydra:runtime.cwd}
+experiment_name: ${dataset.name}__${model.name}
+mode: train
+num_classes: 666
+areas:
+- country
+- region
+- sub-region
+- city
+class_name: quadtree_10_1000
+streetclip: false
+blur: false
+text_tuning: false
+is_baseline: false
